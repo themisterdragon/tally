@@ -9,6 +9,9 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "budget.h"
 #include "datapack.h"
@@ -16,11 +19,13 @@
 #include "loans.h"
 #include "model.h"
 #include "places.h"
+#include "progupdate.h"
 #include "report.h"
 #include "server.h"
 #include "term.h"
 #include "update.h"
 #include "util.h"
+#include "version.h"
 
 using namespace term;
 namespace fs = std::filesystem;
@@ -214,6 +219,7 @@ private:
     void edit_categories();
     void edit_category(size_t i);
     void do_update();
+    void do_program_update();
     void do_export(int which);
     void restore_backup();
     void welcome();
@@ -776,7 +782,7 @@ void App::draw_expenses() {
         if (!card_tag.empty()) {
             size_t nw = util::width(pre + b.expenses[(size_t)id].name);
             if (nw + 2 < (size_t)name_w - 1)   // only when the name itself isn't cut off
-                put(x + 3 + (int)nw, y, util::fit(card_tag, (size_t)name_w - 1 - nw), C_DIM, -1, s ? A_REVERSE : 0);
+                put(x + 3 + (int)nw, y, util::fit(card_tag, (size_t)name_w - 1 - nw), -1, -1, A_DIM | (s ? A_REVERSE : 0));
         }
         int k = item_k - 1;
         hits.push_back({x, y, w, [this, k, id] {
@@ -1468,6 +1474,7 @@ void App::draw_settings() {
         {"Drawing", b.settings.ascii ? "Plain ASCII" : "Unicode blocks", "Plain ASCII draws charts with # - | if you see boxes or question marks."},
         {"Checkups on Home", b.settings.tips ? "On" : "Off", "Friendly rules of thumb based on your numbers."},
         {"Spending categories...", std::to_string(b.categories.size()) + " categories", "Rename, recolor, add, or link a category to the inflation it should follow."},
+        {"Update Tally...", "version " TALLY_VERSION, "Get the newest Tally from GitHub and install it. Your budget isn't touched. Shows exactly what it sends first."},
         {"Update tax tables & prices...", "", "Optional. Shows exactly what it would download first, and nothing about you is sent."},
         {"Import a data pack file...", "", "No internet? Load tax tables and prices from a file (for example, from a USB stick)."},
         {"Save the data pack to a file...", "", "Share your current tax tables and prices with another computer running Tally."},
@@ -2858,6 +2865,71 @@ void App::do_update() {
     say(result, color);
 }
 
+void App::do_program_update() {
+    show_text("Update Tally", progupdate::describe());
+    if (!confirm("Check GitHub for a newer Tally? (You have " TALLY_VERSION ".)", true)) return;
+    say("Asking GitHub for the newest version...", C_DIM);
+    paint();
+    present();
+    auto latest = progupdate::check();
+    if (!latest.ok) { say(latest.message, C_WATCH); return; }
+    if (!progupdate::newer(latest.version, TALLY_VERSION)) { say("You have the newest Tally (" TALLY_VERSION ").", C_GOOD); return; }
+    if (!confirm("Tally " + latest.version + " is ready (you have " TALLY_VERSION "). Download and install it? Your budget isn't touched.", true)) return;
+    say("Downloading Tally " + latest.version + " and checking it...", C_DIM);
+    paint();
+    present();
+    auto r = progupdate::download_and_install(latest);
+    if (r.kind == progupdate::Installed::FAILED) { say(r.message, C_WATCH); return; }
+    if (r.kind == progupdate::Installed::NEEDS_ADMIN) {
+        std::string cmd = "sudo install -m 755 '" + r.new_file + "' '" + r.target + "'";
+        if (!util::have_program("sudo")) {
+            show_text("One more step", r.message + " The new version is downloaded and checked. To finish, run this in a terminal "
+                      "as an administrator, then reopen Tally:\n\n" + cmd);
+            return;
+        }
+        if (!confirm(r.message + " Type it in the next screen to finish?", true)) {
+            show_text("Finish later", "The new version is downloaded and checked. To finish, run this in a terminal, then reopen Tally:\n\n" + cmd);
+            return;
+        }
+        save();
+        stop();
+        std::printf("\nInstalling Tally %s into %s\n(sudo will ask for your password)\n\n", latest.version.c_str(), r.target.c_str());
+        std::fflush(stdout);
+        bool ok = progupdate::install_with_sudo(r);
+        if (!ok) {
+            std::printf("\nThat didn't work, so nothing changed. Press Enter to go back to Tally.");
+            std::fflush(stdout);
+            int c;
+            while ((c = std::getchar()) != '\n' && c != EOF) {}
+            start();
+            apply_display();
+            invalidate();
+            say("Tally wasn't updated (the password step didn't finish).", C_WATCH);
+            return;
+        }
+        r.kind = progupdate::Installed::DONE;
+        start();
+        apply_display();
+        invalidate();
+    }
+#ifdef _WIN32
+    say("Updated to Tally " + latest.version + ". Close Tally and open it again to use the new version.", C_GOOD);
+#else
+    if (confirm("Updated to Tally " + latest.version + ". Restart Tally now to use it?", true)) {
+        save();
+        stop();
+        std::string exe = r.target;
+        execl(exe.c_str(), exe.c_str(), "--file", path.c_str(), (char *)nullptr);
+        start();   // only reached if the restart failed
+        apply_display();
+        invalidate();
+        say("Updated, but Tally couldn't restart itself. Close it and open it again.", C_OKAY);
+    } else {
+        say("Updated to Tally " + latest.version + ". The new version starts the next time you open Tally.", C_GOOD);
+    }
+#endif
+}
+
 void App::restore_backup() {
     std::string dir = util::join(fs::u8path(path).parent_path().u8string(), "backups");
     std::vector<std::string> files;
@@ -3126,7 +3198,7 @@ void App::handle(const Event &e) {
             else if (key == K_ENTER) do_export(sel[tab]);
             break;
         case T_SETTINGS: {
-            handle_list_keys(e, 11);
+            handle_list_keys(e, 12);
             int s = sel[tab];
             bool enter = key == K_ENTER, lr = key == K_LEFT || key == K_RIGHT;
             int d = key == K_LEFT ? -1 : 1;
@@ -3134,38 +3206,40 @@ void App::handle(const Event &e) {
             else if (s == 1 && (enter || lr)) { b.settings.ascii = !b.settings.ascii; apply_display(); save(); }
             else if (s == 2 && (enter || lr)) { b.settings.tips = !b.settings.tips; save(); }
             else if (s == 3 && enter) edit_categories();
-            else if (s == 4 && enter) do_update();
-            else if (s == 5 && enter) {
+            else if (s == 4 && enter) do_program_update();
+            else if (s == 5 && enter) do_update();
+            else if (s == 6 && enter) {
                 std::string p;
                 if (input("Data pack file to import", p, "The full path to a tally-datapack.txt file (for example on a USB stick).")) {
                     auto r = update::import_pack(util::trim(p));
                     recalc();
                     say(r.message, r.ok ? C_GOOD : C_WATCH);
                 }
-            } else if (s == 6 && enter) {
+            } else if (s == 7 && enter) {
                 std::string p = util::join(report::export_folder(b), "tally-datapack.txt");
                 if (input("Save the data pack as", p, "Another computer can load this with 'Import a data pack file'.")) {
                     util::make_dirs(fs::u8path(util::trim(p)).parent_path().u8string());
                     auto r = update::export_pack(util::trim(p));
                     say(r.message, r.ok ? C_GOOD : C_WATCH);
                 }
-            } else if (s == 7 && enter) restore_backup();
-            else if (s == 8 && enter) {
+            } else if (s == 8 && enter) restore_backup();
+            else if (s == 9 && enter) {
                 std::string u = b.settings.update_url;
                 if (input("Update address", u, "Must start with https://. Leave blank for the default.")) {
                     b.settings.update_url = util::trim(u).empty() ? DEFAULT_UPDATE_URL : util::trim(u);
                     save();
                 }
-            } else if (s == 9 && enter) edit_server();
-            else if (s == 10 && enter) {
+            } else if (s == 10 && enter) edit_server();
+            else if (s == 11 && enter) {
                 show_text("About Tally",
                           "Tally is a free, open-source budget planner (GPL-3.0). It runs in a terminal on Linux, macOS, and Windows "
                           "and needs nothing else installed.\n\n"
                           "Your data: one plain text file, " + path + ", readable in any text editor. Tally saves a dated backup "
                           "beside it each day you use it.\n\n"
                           "Privacy: Tally has no account, no analytics, and no ads. It never connects to the internet on its own. "
-                          "Update only runs when you choose it, sends the same fixed request every Tally user sends, and never "
-                          "includes your ZIP code, income, expenses, or anything else you typed.\n\n"
+                          "Update Tally and Update tax tables & prices only run when you choose them, send the same fixed "
+                          "requests every Tally user sends, and never include your ZIP code, income, expenses, or anything "
+                          "else you typed. A new program is checked against its SHA-256 fingerprint before it's installed.\n\n"
                           "Server link (off unless you turn it on): Tally can download purchases from a server you run "
                           "yourself. It sends only your pairing code and a bookmark number, and never uploads your budget.\n\n"
                           "Built-in data:\n- ZIP codes and local medians: U.S. Census Bureau (2020 ZIP-county file; American "

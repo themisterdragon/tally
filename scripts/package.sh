@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")/.."
 ZIG=${ZIG:-$(command -v zig || echo "$HOME/.cache/tally-build/zig/zig")}
 [ -x "$ZIG" ] || { echo "Zig not found. Get it from ziglang.org and set ZIG=/path/to/zig"; exit 1; }
-VERSION=$(sed -n 's/#define TALLY_VERSION "\(.*\)"/\1/p' src/main.cpp)
+VERSION=$(sed -n 's/#define TALLY_VERSION "\(.*\)"/\1/p' src/version.h)
 OUT=dist; WORK=dist/work
 rm -rf "$WORK"; mkdir -p "$WORK"
 
@@ -53,10 +53,25 @@ install -m 755 "$WORK/tally-x86_64" "$WORK/tally-arm64" packaging/linux/install.
 readme "$L/READ ME FIRST.txt" 'INSTALL:  sh install.sh\n  (for everyone on this computer:  sh install.sh --system)\n  Then type  tally  in a terminal or find Tally in your app menu.\n\nNO INSTALL: run ./tally-x86_64 (or ./tally-arm64 on ARM, e.g. Raspberry Pi).\n\nWorks on any Linux distro: the program is one self-contained file.\nOn the Linux text console, set Settings > Colors to Basic and Drawing to Plain ASCII.\n\nUNINSTALL:  sh install.sh --uninstall\n'
 sed -i 's/\r//' "$L/READ ME FIRST.txt"
 
+# --- Update Tally: the plain program files plus the list Settings > Update Tally reads ---
+# Attach everything in dist/update-<version>/ to the GitHub release.
+U="$OUT/update-$VERSION"; rm -rf "$U"; mkdir -p "$U"
+install -m 755 "$WORK/tally-x86_64" "$U/tally-linux-x86_64"
+install -m 755 "$WORK/tally-arm64" "$U/tally-linux-arm64"
+install -m 755 "$M/tally" "$U/tally-macos"
+install -m 755 "$WORK/tally.exe" "$U/tally-windows-x86_64.exe"
+{ echo "# Tally release list for Settings > Update Tally"
+  echo "version $VERSION"
+  echo "tag v$VERSION"
+  for pair in linux-x86_64:tally-linux-x86_64 linux-arm64:tally-linux-arm64 macos:tally-macos windows-x86_64:tally-windows-x86_64.exe; do
+      key=${pair%%:*}; file=${pair#*:}
+      echo "file $key $file $(sha256sum "$U/$file" | cut -d' ' -f1)"
+  done; } > "$U/tally-latest.txt"
+
 mkdir -p "$OUT"
 ( cd "$WORK" && rm -f "../Tally-$VERSION-Windows.zip" "../Tally-$VERSION-macOS.zip" "../Tally-$VERSION-Linux.tar.gz" \
   && zip -qr "../Tally-$VERSION-Windows.zip" "Tally-$VERSION-Windows" \
   && zip -qry "../Tally-$VERSION-macOS.zip" "Tally-$VERSION-macOS" \
   && tar -czf "../Tally-$VERSION-Linux.tar.gz" "Tally-$VERSION-Linux" )
 rm -rf "$WORK"
-ls -la "$OUT"/Tally-"$VERSION"-*
+ls -la "$OUT"/Tally-"$VERSION"-* "$U"

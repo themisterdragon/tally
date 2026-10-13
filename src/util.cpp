@@ -228,23 +228,28 @@ static std::string env(const char *name) {
     return v ? v : "";
 }
 
-static std::string exe_dir() {
+std::string exe_path() {
 #ifdef _WIN32
     char buf[MAX_PATH];
     DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    return n ? fs::path(std::string(buf, n)).parent_path().string() : "";
+    return n ? std::string(buf, n) : "";
 #elif defined(__APPLE__)
     char buf[4096];
     uint32_t size = sizeof buf;
     if (_NSGetExecutablePath(buf, &size) != 0) return "";
     std::error_code ec;
     auto p = fs::weakly_canonical(fs::path(buf), ec);
-    return ec ? "" : p.parent_path().string();
+    return ec ? "" : p.string();
 #else
     std::error_code ec;
     auto p = fs::read_symlink("/proc/self/exe", ec);
-    return ec ? "" : p.parent_path().string();
+    return ec ? "" : p.string();
 #endif
+}
+
+static std::string exe_dir() {
+    std::string p = exe_path();
+    return p.empty() ? "" : fs::path(p).parent_path().string();
 }
 
 std::string data_dir() {

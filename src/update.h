@@ -1,4 +1,5 @@
-// The ONLY part of Tally that touches the internet, and only when you choose Update.
+// Tax tables and prices: downloaded only when you choose Update. (Network code lives here, in
+// progupdate.cpp for Update Tally, and in server.cpp for the optional server link.)
 // It downloads fixed public files with the system's curl program. Nothing you typed
 // (ZIP, income, expenses, loans) is ever part of a request: every Tally user sends
 // exactly the same request, so it can't tell anyone anything about you.

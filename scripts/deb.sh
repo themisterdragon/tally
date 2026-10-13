@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")/.."
 ZIG=${ZIG:-$(command -v zig || echo "$HOME/.cache/tally-build/zig/zig")}
 [ -x "$ZIG" ] || { echo "Zig not found. Set ZIG=/path/to/zig"; exit 1; }
-TV=$(sed -n 's/#define TALLY_VERSION "\(.*\)"/\1/p' src/main.cpp)
+TV=$(sed -n 's/#define TALLY_VERSION "\(.*\)"/\1/p' src/version.h)
 OUT=dist; WORK=dist/debwork
 rm -rf "$WORK"; mkdir -p "$WORK" "$OUT"
 

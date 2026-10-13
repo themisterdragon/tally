@@ -48,10 +48,15 @@ Linux, macOS, and Windows, and needs no internet, no account, and nothing else i
 Everything you type stays on your computer, in one plain text file you can open in any editor.
 Tally has no account, no analytics, and no ads.
 
-Tally **never** goes online by itself. The only network code is the optional **Update** screen
-(Settings → Update), and it runs only when you choose it:
+Tally **never** goes online by itself. The only network code is the two optional updates in
+Settings (**Update Tally** and **Update tax tables & prices**), plus the server link below. Each
+runs only when you choose it:
 
 - It first shows exactly what it will download.
+- **Update Tally** asks GitHub for `tally-latest.txt` from this repository's newest release, then
+  downloads the program file for your computer, checks its SHA-256 fingerprint and that it runs,
+  and only then swaps it in. Your budget and backups aren't touched. If Tally is installed for
+  everyone (for example `/usr/local/bin`), it asks for your password with `sudo` to finish.
 - It sends the **same fixed request for every user**. Prices for all U.S. regions are requested
   together, so even your region isn't revealed.
 - Your ZIP code, income, expenses, loans, and wants are never part of any request.
@@ -147,6 +152,11 @@ are cached in `~/.cache/tally-build`.
 
 `data/tally-datapack.txt` is the file the app's Update downloads, so publishing a new one updates
 everyone's tax tables without a new release.
+
+For a new version of the program: set `TALLY_VERSION` in `src/version.h`, run `sh scripts/package.sh`
+(and `sh scripts/deb.sh`), and attach the installers **plus every file in `dist/update-<version>/`**
+to a GitHub release tagged `v<version>`. Settings → Update Tally reads `tally-latest.txt` from the
+newest release, so a release without it can't be installed from inside Tally.
 
 When a new tax year comes out, update `FEDERAL` and `TAX_YEAR` in the script and the Tax Foundation
 link in `SOURCES`, then rebuild.

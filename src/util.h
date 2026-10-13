@@ -36,6 +36,7 @@ std::string add_months_text(int months);        // month/year that many months f
 std::string ordinal(int n);                     // the suffix only: 1 -> "st", 12 -> "th", 22 -> "nd"
 
 // Files and folders
+std::string exe_path();    // this program's own file, links followed ("" = unknown)
 std::string data_dir();     // where tally.txt lives (TALLY_DATA, portable folder, or the OS default)
 std::string documents_dir();
 bool make_dirs(const std::string &path);

@@ -5,6 +5,8 @@
 #include <string>
 
 #include "app.h"
+#include "version.h"
+#include "progupdate.h"
 #include "budget.h"
 #include "datapack.h"
 #include "model.h"
@@ -13,7 +15,6 @@
 #include "update.h"
 #include "util.h"
 
-#define TALLY_VERSION "1.2.1"
 
 static void usage() {
     std::printf(
@@ -95,6 +96,7 @@ int main(int argc, char **argv) {
         std::printf("%s\n", out.c_str());
         return 0;
     }
+    progupdate::cleanup_old();
     int rc = run_app(file);
     if (rc == 1) {
         std::fprintf(stderr, "Tally needs an interactive terminal. Try: tally --report\n");
