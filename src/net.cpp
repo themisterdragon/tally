@@ -8,6 +8,10 @@
 
 #include "util.h"
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
 namespace net {
 
 const J &J::operator[](const std::string &k) const {
@@ -54,12 +58,16 @@ struct Reader {
                 else if (c == 't') out += '\t';
                 else if (c == 'r' || c == 'b' || c == 'f') {}
                 else if (c == 'u') {
+                    // a surrogate pair makes one character; half of one, or a broken pair, is U+FFFD
                     unsigned cp = hex4();
                     if (cp >= 0xD800 && cp < 0xDC00 && i + 2 < s.size() && s[i + 1] == '\\' && s[i + 2] == 'u') {
+                        size_t back = i;
                         i += 2;
                         unsigned lo = hex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        if (lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else { cp = 0xFFFD; i = back; }   // read the second \u on its own next time
                     }
+                    if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD;
                     put_utf8(out, cp);
                 } else out += c;
             } else {
@@ -131,17 +139,22 @@ int close_pipe(FILE *p) {
 #ifdef _WIN32
     return _pclose(p);
 #else
-    return pclose(p);
+    int st = pclose(p);   // a wait status: the exit code is inside it
+    return st != -1 && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 #endif
 }
 
+// --max-filesize lets curl stop early when the server says the size up front
 #ifdef _WIN32
-const char *CURL = "curl.exe -q -sS --http1.1 -A Tally ";
+const char *CURL = "curl.exe -q -sS --http1.1 --max-filesize 20971520 -A Tally ";
 const char *QUIET = " 2>NUL";
 #else
-const char *CURL = "curl -q -sS --http1.1 -A Tally ";
+const char *CURL = "curl -q -sS --http1.1 --max-filesize 20971520 -A Tally ";
 const char *QUIET = " 2>/dev/null";
 #endif
+
+// Nothing Tally downloads comes near this; a reply that does is broken or hostile.
+const size_t MAX_DOWNLOAD = 20 * 1024 * 1024;
 
 bool read_all(const std::string &cmd, std::string &out, int &rc) {
     FILE *p = open_pipe(cmd);
@@ -149,8 +162,13 @@ bool read_all(const std::string &cmd, std::string &out, int &rc) {
     char buf[8192];
     size_t n;
     out.clear();
-    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
+    bool too_big = false;
+    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) {
+        if (!too_big) out.append(buf, n);
+        if (out.size() > MAX_DOWNLOAD) { too_big = true; out.clear(); }   // keep reading so curl can finish
+    }
     rc = close_pipe(p);
+    if (too_big) rc = 63;   // curl's own "too big" code
     return true;
 }
 
@@ -208,6 +226,7 @@ int fetch(const std::string &url, const std::string &config, std::string &out) {
     if (!config.empty()) args += "-K " + quote_arg(config) + " ";
     int rc = -1;
     if (!read_all(std::string(CURL) + args + quote_arg(url) + QUIET, out, rc)) return 0;
+    if (rc == 63) { out.clear(); return 413; }   // the reply was too big to be real
     size_t nl = out.find_last_of('\n');
     if (nl == std::string::npos) return 0;
     int code = std::atoi(out.c_str() + nl + 1);

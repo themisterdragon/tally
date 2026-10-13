@@ -409,17 +409,29 @@ void clear(int bg) {
     cur_x = cur_y = -1;
 }
 
+// One character as it may safely reach the terminal. Names can come from outside (a server,
+// an imported file), and a control character in one could move the cursor, change colors, or
+// worse, so control characters (C0, DEL, C1) and broken UTF-8 show as "?".
+static std::string printable(const std::string &text, size_t start, size_t end, int cp) {
+    unsigned char lead = (unsigned char)text[start];
+    bool broken = end - start == 1 && lead >= 0x80;
+    for (size_t k = start + 1; k < end; k++)
+        if (((unsigned char)text[k] & 0xC0) != 0x80) broken = true;
+    if (cp == '\t' || cp == '\n' || cp == '\r') return " ";
+    if (broken || cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0)) return "?";
+    return text.substr(start, end - start);
+}
+
 void put(int x, int y, const std::string &text, int fg, int bg, int attr) {
     if (y < 0 || y >= H) return;
     size_t i = 0;
     while (i < text.size()) {
         size_t start = i;
-        utf8_decode(text, i);
+        int cp = utf8_decode(text, i);
         if (x >= W) break;
         if (x >= 0) {
             Cell &c = back[(size_t)y * W + x];
-            c.ch = text.substr(start, i - start);
-            if (c.ch == "\t" || c.ch == "\n" || c.ch == "\r") c.ch = " ";
+            c.ch = printable(text, start, i, cp);
             c.fg = (short)fg;
             if (bg != -2) c.bg = (short)bg;
             c.attr = (unsigned char)attr;

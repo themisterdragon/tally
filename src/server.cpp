@@ -80,6 +80,7 @@ struct CodeFile {
 std::string status_problem(int status) {
     if (status == 0) return "Couldn't reach your server. Is it running, and is this computer on the same network?";
     if (status == 401 || status == 403) return "The server didn't accept the pairing code. Get a new one from the server's Settings page.";
+    if (status == 413) return "The server sent far more than any purchase list could be, so Tally stopped. Nothing changed.";
     if (status == 404) return "That address answered, but it isn't a Tally server (no " + std::string(API) + " there).";
     if (status >= 300 && status < 400) return "The server tried to send Tally somewhere else. Use the exact address it shows (maybe https://).";
     return "The server had a problem (HTTP " + std::to_string(status) + "). Nothing changed.";
