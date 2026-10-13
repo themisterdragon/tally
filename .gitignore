@@ -1,0 +1,7 @@
+tally
+tally.exe
+*.o
+*.obj
+build/
+__pycache__/
+dist/

@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.14)
+project(tally LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+file(GLOB TALLY_SOURCES ${CMAKE_SOURCE_DIR}/src/*.cpp)
+add_executable(tally ${TALLY_SOURCES})
+target_include_directories(tally PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+if(MSVC)
+  target_compile_options(tally PRIVATE /W3 /utf-8 /bigobj)
+  target_compile_definitions(tally PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+else()
+  target_compile_options(tally PRIVATE -Wall -Wextra)
+endif()
+if(WIN32)
+  target_link_libraries(tally PRIVATE shell32)
+  target_compile_definitions(tally PRIVATE NOMINMAX)
+endif()
+
+install(TARGETS tally RUNTIME DESTINATION bin)
