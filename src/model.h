@@ -80,6 +80,8 @@ struct Expense {
     int payments_in(const std::string &month) const;
     // The next day it's due, on or after 'from' (day numbers). -1 = not known.
     long next_due(long from) const;
+    // The days of that month it's due (1-31), for the calendar. Empty = none that month, or not known.
+    std::vector<int> due_days_in(const std::string &month) const;
     // What the plan expects in that month: the real number of payments when known, else a
     // monthly-or-more-often bill's monthly average, or one payment for bills that come less often.
     double planned_in_month(const std::string &month) const {
@@ -148,6 +150,29 @@ struct Purchase {
     std::string month() const { return date.size() >= 7 ? date.substr(0, 7) : ""; }   // "2026-10"
 };
 
+// Money that isn't regular pay: birthday or holiday money, a gift, a side hustle, selling something.
+// It counts in the month it came in, and never changes the monthly plan.
+enum ExtraKind { EXTRA_GIFT, EXTRA_SIDE, EXTRA_OTHER, EXTRA_KIND_COUNT };
+const char *extra_kind_name(ExtraKind k);   // "Gift or birthday money"
+const char *extra_kind_key(ExtraKind k);    // "gift" (file format)
+struct Extra {
+    std::string date;         // YYYY-MM-DD
+    std::string name;
+    double amount = 0;
+    ExtraKind kind = EXTRA_GIFT;
+    std::string month() const { return date.size() >= 7 ? date.substr(0, 7) : ""; }   // "2026-10"
+};
+
+// A cost that happens once, like a car repair, a vet visit, or a gift you're buying. It counts in
+// the month it happens and never changes the monthly plan.
+struct OneTime {
+    std::string date;         // YYYY-MM-DD
+    std::string name;
+    double amount = 0;
+    std::string category = "Other";
+    std::string month() const { return date.size() >= 7 ? date.substr(0, 7) : ""; }   // "2026-10"
+};
+
 // The optional connection to a server you run yourself (off unless you turn it on).
 // Tally only downloads from it; your budget is never uploaded.
 struct ServerLink {
@@ -189,6 +214,8 @@ struct Budget {
     std::vector<Card> cards;
     std::vector<Want> wants;
     std::vector<Purchase> purchases;
+    std::vector<Extra> extras;
+    std::vector<OneTime> one_times;
     std::vector<Category> categories;
     ServerLink link;
     Settings settings;

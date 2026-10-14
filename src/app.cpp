@@ -107,6 +107,9 @@ private:
     bool bought_view = false;            // Expenses: B switches between the plan and what was bought
     bool cards_view = false;             // Expenses: C shows credit cards and the bills on them
     std::string bought_month;            // "2026-10"
+    std::string bills_month;             // Expenses: the month shown ("2026-10"); Left/Right steps through months
+    bool cal_view = false;               // Expenses: V shows that month as a calendar
+    int cal_day = 1;                     // the day picked on the calendar
     bool national = false;
     int learn_scroll = 0;
     std::string last_file;
@@ -159,6 +162,20 @@ private:
     void draw_bought();
     std::vector<int> bought_order() const;
     void draw_cards();
+    void draw_calendar();
+    void handle_calendar(const Event &e, int lower);
+    void open_day(int day);
+    std::string bill_month() {
+        if (bills_month.size() != 7) bills_month = budget::this_month();
+        return bills_month;
+    }
+    void step_bill_month(int d) { bills_month = add_month(bill_month(), d); }
+    std::pair<std::string, int> month_money_line(const std::string &month);
+    void extra_money(const std::string &date);
+    void edit_extra(size_t i);
+    void add_extra(const std::string &date);
+    void add_one_time(const std::string &date);
+    void edit_one_time(size_t i);
     void draw_loans();
     void draw_wants();
     void draw_area();
@@ -403,7 +420,7 @@ void App::draw_frame(const std::string &keys) {
     }
     // status line
     if (!msg.empty()) put(1, H() - 2, util::cut(msg, (size_t)W() - 2), msg_color, -1, A_BOLD);
-    bool sub = (tab == T_PRICES && bought_view) || (tab == T_EXPENSES && cards_view);
+    bool sub = (tab == T_PRICES && bought_view) || (tab == T_EXPENSES && (cards_view || cal_view));
     draw_keys(form_ || tab == T_HOME ? keys : keys + (sub ? "|Esc back" : "|Esc home"));
 }
 
@@ -529,7 +546,7 @@ void App::draw_home() {
 // =============================================================================
 
 void App::draw_income() {
-    draw_frame("A add income|Enter edit|M received this month|D delete|H household|? explain|Q quit");
+    draw_frame("A add income|Enter edit|M received this month|X extra money|D delete|H household|? explain|Q quit");
     int y = top(), x = 1, w = W() - 2;
     y = heading(x, y, "HOUSEHOLD  (press H to change)", w);
     const auto &pl = sum.place;
@@ -684,10 +701,13 @@ std::vector<int> App::expense_order() const {
 
 void App::draw_expenses() {
     if (cards_view) { draw_cards(); return; }
-    draw_frame("A add|T common|Enter edit|M paid|D delete|U undo|S sort|F filter|C cards|? help");
+    if (cal_view) { draw_calendar(); return; }
+    draw_frame("A add|Enter edit|M paid|Left/Right month|V calendar|X one-time in/out|T common|D delete|U undo|S sort|F filter|C cards|? help");
     int y = top(), x = 1, w = W() - 2;
     static const char *sorts[] = {"category", "biggest first", "name", "next due"};
-    std::string title = "EXPENSES  (sorted by " + std::string(sorts[exp_sort]) + (exp_filter.empty() ? "" : ", only " + exp_filter) + ")";
+    std::string month = bill_month();
+    std::string title = "EXPENSES IN " + util::upper(month_label(month)) + (month == budget::this_month() ? "" : "  (N = this month)") +
+                        "  sorted by " + std::string(sorts[exp_sort]) + (exp_filter.empty() ? "" : ", only " + exp_filter);
     y = heading(x, y, title, w);
     auto order = expense_order();
     if (order.empty()) {
@@ -698,7 +718,6 @@ void App::draw_expenses() {
         wrap_text(x + 1, y, w - 2, "Tip: start with the big, regular ones. You can add small stuff later. Loans you add on the Loans tab show up here on their own.", C_DIM);
         return;
     }
-    std::string month = budget::this_month();
     auto mb = budget::month_bills(b, month);
     bool show_due = w >= 96, show_type = w >= 84, show_paid = w >= 104;
     int name_w = w - 3 - 17 - 12 - 15 - 12 - (show_type ? 8 : 0) - (show_due ? 8 : 0) - (show_paid ? 12 : 0);
@@ -725,7 +744,7 @@ void App::draw_expenses() {
     int sel_row = 0;
     for (int r = 0, k = 0; r < (int)rows.size(); r++)
         if (!rows[r].is_header) { if (k++ == sel[tab]) { sel_row = r; break; } }
-    int vis = bottom() - y - 3;
+    int vis = bottom() - y - 4;
     if (sel_row < scroll[tab]) scroll[tab] = std::max(0, sel_row - 1);
     if (sel_row >= scroll[tab] + vis) scroll[tab] = sel_row - vis + 1;
     int item_k = 0;
@@ -735,7 +754,7 @@ void App::draw_expenses() {
     for (int r = 0; r < (int)rows.size(); r++) {
         if (!rows[r].is_header) item_k++;
         if (r < scroll[tab]) continue;
-        if (y >= bottom() - 3) break;
+        if (y >= bottom() - 4) break;
         if (rows[r].is_header) {
             const Category *c = b.category(rows[r].header);
             double sub = 0;
@@ -799,24 +818,38 @@ void App::draw_expenses() {
     std::string foot = std::to_string(count) + (count == 1 ? " item  " : " items  ") + g_bullet() + "  " + util::money(total) + " a month  " + g_bullet() + "  needs " +
                        util::money(needs, false) + ", wants " + util::money(total - needs, false);
     put(x + 1, bottom() - 1, util::cut(foot, w), C_DIM, -1, A_BOLD);
-    if (any_avg)
-        put(x + 1, bottom() - 3, util::cut("~ weekly bills show the monthly average (x 52 weeks / 12): most months have 4 payments, some have 5. Open one to see which.", (size_t)w), C_DIM);
+    // the month shown: money in (pay + extra) and out (bills as paid, or as planned)
+    auto ml = month_money_line(month);
+    put(x + 1, bottom() - 2, util::cut(ml.first, (size_t)w), ml.second, -1, A_BOLD);
     // bills entered for this month vs. their plan (card payments stand in for the bills on the card)
     if (mb.bills) {
         double diff = mb.paid - mb.plan;
         std::string line = util::month_name(std::atoi(month.c_str() + 5)) + ": " + std::to_string(mb.bills) + (mb.bills == 1 ? " bill" : " bills") +
                            " entered, paid " + util::money(mb.paid) + " vs " + util::money(mb.plan) + " planned" +
                            (std::fabs(diff) < 0.005 ? "" : " (" + std::string(diff > 0 ? "+" : "-") + util::money(std::fabs(diff)) + ")");
-        put(x + 1, bottom() - 2, util::cut(line, w), diff > 0.005 ? C_OKAY : C_GOOD, -1, A_BOLD);
-    }
+        put(x + 1, bottom() - 3, util::cut(line, w), diff > 0.005 ? C_OKAY : C_GOOD, -1, A_BOLD);
+    } else if (any_avg)
+        put(x + 1, bottom() - 3, util::cut("~ weekly bills show the monthly average (x 52 weeks / 12): most months have 4 payments, some have 5. Open one to see which.", (size_t)w), C_DIM);
+}
+
+// "October: in $5,210 (pay $4,960 + extra $250)  -  out $4,100  -  left $1,110"
+std::pair<std::string, int> App::month_money_line(const std::string &month) {
+    auto mm = budget::month_money(b, sum, month);
+    std::string pay = (mm.pay_entered || b.earners.empty() ? "" : "~") + util::money(mm.pay, false);
+    std::string line = util::month_name(std::atoi(month.c_str() + 5)) + ": in " + util::money(mm.in(), false) +
+                       (mm.extras ? " (pay " + pay + " + extra " + util::money(mm.extra, false) + ")" : " (pay " + pay + ")") + "  " + g_bullet() +
+                       "  out " + util::money(mm.out(), false) + (mm.one_times ? " (one-time " + util::money(mm.one_time, false) + ")" : "") + "  " +
+                       g_bullet() + "  left " + (mm.left() < 0 ? "-" : "") + util::money(std::fabs(mm.left()), false);
+    if (!mm.extras && !mm.one_times) line += "  " + g_bullet() + "  X adds gift money or a one-time cost";
+    return {line, mm.left() < -0.5 ? C_WATCH : C_GOOD};
 }
 
 // --- Credit cards: which bills are charged to which card ---------------------------
 
 void App::draw_cards() {
-    draw_frame("A add a card|Enter edit|M paid this month|Space pick bills|D delete|C back to plan|? explain");
+    draw_frame("A add a card|Enter edit|M paid|Space pick bills|Left/Right month|D delete|C back to plan|? explain");
     int y = top(), x = 1, w = W() - 2;
-    std::string month = budget::this_month();
+    std::string month = bill_month();
     y = heading(x, y, "CREDIT CARDS  (" + month_label(month) + ")", w);
     if (b.cards.empty()) {
         y++;
@@ -858,7 +891,7 @@ void App::draw_cards() {
     }
     if (!shown) put(x + 2, y++, "No bills on this card yet. Press Space to pick them.", C_OKAY);
     y++;
-    if (!cm.entered) put(x + 1, y, util::cut("Paid the card this month? Press M and type the amount. It replaces these bills in this month's total.", (size_t)w - 2), C_DIM);
+    if (!cm.entered) put(x + 1, y, util::cut("Paid the card in " + month_label(month) + "? Press M and type the amount. It replaces these bills in this month's total.", (size_t)w - 2), C_DIM);
     else if (cm.other() > 0.5)
         put(x + 1, y, util::cut("Paid " + util::money(cm.paid) + ": " + util::money(cm.expected) + " for the bills above, " + util::money(cm.other()) +
                                     " for other things charged to the card.", (size_t)w - 2), C_OKAY, -1, A_BOLD);
@@ -870,7 +903,7 @@ void App::draw_cards() {
 void App::handle_cards(const Event &e, int lower) {
     handle_list_keys(e, (int)b.cards.size());
     bool has = sel[tab] < (int)b.cards.size();
-    std::string month = budget::this_month();
+    std::string month = bill_month();
     if (lower == 'a') {
         Card c;
         c.name = "";
@@ -948,7 +981,7 @@ void App::edit_card(size_t i) {
                         "Tick off each bill you charge to this card (streaming, phone, gas...). Enter opens the list.", nullptr, nullptr};
             bills.edit = [this, i] { pick_card_bills(i); };
             f.push_back(bills);
-            std::string month = budget::this_month();
+            std::string month = bill_month();
             const Actual *a = c.paid.find(month);
             Field paid{"Paid in " + month_label(month), a ? util::money(a->amount) : "(not entered)",
                        "What you paid on the card this month. It stands in for the bills on it, so nothing is counted twice.", nullptr, nullptr};
@@ -969,10 +1002,10 @@ void App::edit_card(size_t i) {
         },
         [this, i] {
             std::vector<std::pair<std::string, int>> p;
-            std::string month = budget::this_month();
+            std::string month = bill_month();
             auto mb = budget::month_bills(b, month);
             const auto &cm = mb.cards[i];
-            p.push_back({"Bills on it this month: " + util::money(cm.expected), -1});
+            p.push_back({"Bills on it in " + month_label(month) + ": " + util::money(cm.expected), -1});
             if (!cm.entered) p.push_back({"No payment entered yet for " + month_label(month) + ".", C_DIM});
             else {
                 p.push_back({"You paid: " + util::money(cm.paid), -1});
@@ -984,6 +1017,471 @@ void App::edit_card(size_t i) {
             p.push_back({"Why this helps: the bills on a card are already in your budget. Without this, paying the card "
                          "would look like a second, separate expense. Here the payment covers those bills, and only "
                          "the extra shows up as new spending.", C_DIM});
+            return p;
+        });
+}
+
+// --- Calendar: the month shown, with a colored dot for each kind of bill due that day ---
+
+namespace {
+struct DayItem {
+    std::string name, category;
+    double amount = 0;         // one payment (extra money: what came in)
+    int color = 245;
+    int expense = -1, loan = -1, extra = -1, once = -1;   // which one it is
+    bool paid = false;         // a real amount is entered for this month
+};
+}
+
+static std::string cal_dot() { return term::ascii() ? "o" : "\xE2\x97\x8F"; }   // ●
+
+void App::draw_calendar() {
+    draw_frame("Arrows pick a day|Enter open day|[ ] month|N today|X one-time in/out|V list|? help");
+    int y = top(), x = 1, w = W() - 2;
+    std::string month = bill_month();
+    int yr = std::atoi(month.c_str()), mo = std::atoi(month.c_str() + 5), dim = util::days_in_month(yr, mo);
+    cal_day = std::max(1, std::min(cal_day, dim));
+    util::Date t = util::today();
+    y = heading(x, y, "CALENDAR  " + util::upper(month_label(month)) + "  ([ and ] change the month)", w);
+    auto ml = month_money_line(month);
+    put(x + 1, y++, util::cut(ml.first, (size_t)w - 1), ml.second, -1, A_BOLD);
+
+    // what lands on each day
+    std::vector<std::vector<DayItem>> days((size_t)dim + 1);
+    std::vector<std::string> unknown;
+    long first = day_number(yr, mo, 1);
+    auto mb = budget::month_bills(b, month);
+    for (size_t i = 0; i < b.expenses.size(); i++) {
+        const Expense &e = b.expenses[i];
+        auto dd = e.due_days_in(month);
+        if (dd.empty()) {
+            if (e.next_due(first) < 0) unknown.push_back(e.name);
+            continue;
+        }
+        const Category *c = b.category(e.category);
+        const Card *cd = budget::card_of(b, e);
+        bool paid = e.actual.find(month) || (cd && mb.cards[(size_t)(cd - b.cards.data())].entered);
+        for (int d : dd) {
+            DayItem it;
+            it.name = e.name + (e.card.empty() ? "" : " [" + e.card + "]");
+            it.category = e.category;
+            it.amount = e.amount;
+            it.color = c ? c->color : 245;
+            it.expense = (int)i;
+            it.paid = paid;
+            days[(size_t)d].push_back(it);
+        }
+    }
+    for (size_t i = 0; i < b.loans.size(); i++) {
+        const Loan &l = b.loans[i];
+        if (!l.in_budget || l.balance <= 0) continue;
+        if (!l.due_day()) { unknown.push_back(l.name); continue; }
+        DayItem it;
+        it.name = l.name;
+        it.category = row_category(-(int)i - 1);
+        it.amount = l.monthly_payment() + l.extra;
+        const Category *c = b.category(it.category);
+        it.color = c ? c->color : 245;
+        it.loan = (int)i;
+        days[(size_t)std::min(l.due_day(), dim)].push_back(it);
+    }
+    for (size_t i = 0; i < b.one_times.size(); i++) {
+        const OneTime &ot = b.one_times[i];
+        int ey, em, ed;
+        if (ot.month() != month || !parse_date(ot.date, ey, em, ed) || ed < 1 || ed > dim) continue;
+        DayItem it;
+        it.name = ot.name;
+        it.category = ot.category;
+        it.amount = ot.amount;
+        const Category *c = b.category(ot.category);
+        it.color = c ? c->color : 245;
+        it.once = (int)i;
+        it.paid = true;   // nothing to enter later: the amount is what it cost
+        days[(size_t)ed].push_back(it);
+    }
+    for (size_t i = 0; i < b.extras.size(); i++) {
+        const Extra &xm = b.extras[i];
+        int ey, em, ed;
+        if (xm.month() != month || !parse_date(xm.date, ey, em, ed) || ed < 1 || ed > dim) continue;
+        DayItem it;
+        it.name = xm.name;
+        it.amount = xm.amount;
+        it.color = C_GOOD;
+        it.extra = (int)i;
+        days[(size_t)ed].push_back(it);
+    }
+
+    // the grid: a side panel for the picked day when there's room, else the day's list goes underneath
+    bool side = w >= 100;
+    int grid_w = side ? std::min(7 * 16, w - 40) : w;
+    int cw = std::max(8, grid_w / 7);
+    int offset = (int)(((first % 7) + 7 + 4) % 7);   // 1970-01-01 was a Thursday; 0 = Sunday
+    int weeks = (offset + dim + 6) / 7;
+    int legend_y = bottom() - 1;
+    int avail = legend_y - y - 1 - (unknown.empty() ? 0 : 1);
+    int ch = std::max(1, std::min(4, avail / weeks));
+    static const char *WD[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    for (int c = 0; c < 7; c++) put(x + c * cw, y, util::fit(WD[c], (size_t)cw), C_DIM, -1, A_BOLD);
+    y++;
+    int grid_top = y;
+    for (int d = 1; d <= dim; d++) {
+        int cell = offset + d - 1, cx = x + (cell % 7) * cw, cy = grid_top + (cell / 7) * ch;
+        bool picked = d == cal_day, today = yr == t.y && mo == t.m && d == t.d;
+        const auto &items = days[(size_t)d];
+        std::string num = (d < 10 ? " " : "") + std::to_string(d);
+        put(cx, cy, num, picked ? C_ACCENT : today ? C_GOOD : -1, -1, (picked ? A_REVERSE : 0) | (today || picked ? A_BOLD : 0));
+        // one dot per kind of bill due that day; extra money is a green +
+        std::vector<int> colors;
+        bool extra = false, all_paid = !items.empty();
+        double due = 0, in = 0;
+        for (const auto &it : items) {
+            if (it.extra >= 0) { extra = true; in += it.amount; continue; }
+            due += it.amount;
+            if (!it.paid) all_paid = false;
+            if (std::find(colors.begin(), colors.end(), it.color) == colors.end()) colors.push_back(it.color);
+        }
+        int dx = ch == 1 ? cx + 3 : cx, dy = ch == 1 ? cy : cy + 1, room = ch == 1 ? cw - 4 : cw - 1;
+        int k = 0;
+        for (int col : colors) {
+            if (k >= room - 1 && (int)colors.size() > room) { put(dx + k, dy, "+", C_DIM); k++; break; }
+            put(dx + k++, dy, cal_dot(), col);
+        }
+        if (extra && k < room) put(dx + k++, dy, "+", C_GOOD, -1, A_BOLD);
+        if (ch >= 3) {
+            std::string amt = due > 0.005 ? util::money(due, false) : "";
+            if (in > 0.005) amt += (amt.empty() ? "+" : " +") + util::money(in, false);
+            put(cx, cy + 2, util::fit(amt, (size_t)cw - 1), due > 0.005 && all_paid ? C_GOOD : C_DIM);
+        }
+        hits.push_back({cx, cy, cw - 1, [this, d] { if (cal_day == d) open_day(d); else cal_day = d; }});
+        if (ch >= 2) hits.push_back({cx, cy + 1, cw - 1, [this, d] { if (cal_day == d) open_day(d); else cal_day = d; }});
+    }
+    int grid_bottom = grid_top + weeks * ch;
+
+    // the picked day
+    int px = side ? x + 7 * cw + 2 : x + 1, py = side ? grid_top - 1 : grid_bottom;
+    int pw = side ? w - 7 * cw - 2 : w - 2, pbottom = legend_y - (unknown.empty() ? 0 : 1);
+    if (py < pbottom) {
+        long dn = first + cal_day - 1;
+        static const char *WDL[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        std::string title = std::string(WDL[(offset + cal_day - 1) % 7]) + ", " + util::month_name(mo) + " " + std::to_string(cal_day);
+        if (dn == day_number(t.y, t.m, t.d)) title += " (today)";
+        put(px, py++, util::cut(title, (size_t)pw), C_ACCENT, -1, A_BOLD);
+        const auto &items = days[(size_t)cal_day];
+        if (items.empty() && py < pbottom) put(px, py++, util::cut("Nothing due. Enter adds a one-time cost or extra money.", (size_t)pw), C_DIM);
+        for (size_t n = 0; n < items.size() && py < pbottom; n++) {
+            const auto &it = items[n];
+            if (py == pbottom - 1 && n + 1 < items.size()) { put(px, py++, "... and " + std::to_string(items.size() - n) + " more (Enter)", C_DIM); break; }
+            std::string status = it.extra >= 0 ? "came in" : it.once >= 0 ? "one-time" : it.loan >= 0 ? "loan" : it.paid ? "paid" : "due";
+            std::string amt = (it.extra >= 0 ? "+" : "") + util::money(it.amount);
+            int nw = std::max(6, pw - 2 - 12 - 9);
+            put(px, py, it.extra >= 0 ? "+" : cal_dot(), it.color, -1, A_BOLD);
+            put(px + 2, py, util::fit(it.name, (size_t)nw) + util::pad_left(amt, 12) + "  " + status,
+                it.extra >= 0 ? C_GOOD : it.paid && it.once < 0 ? C_DIM : -1);
+            py++;
+        }
+    }
+
+    // bills with no due day can't be placed
+    if (!unknown.empty())
+    {
+        std::string names;
+        for (const auto &n : unknown) names += (names.empty() ? "" : ", ") + n;
+        put(x + 1, legend_y - 1, util::cut("No due day yet: " + names + ". Open one on the list (V) and set its due date.", (size_t)w - 1), C_DIM);
+    }
+    // legend: the kinds of bills this month
+    std::vector<std::string> seen;
+    int lx = x + 1;
+    for (int d = 1; d <= dim; d++)
+        for (const auto &it : days[(size_t)d]) {
+            if (it.extra >= 0 || std::find(seen.begin(), seen.end(), it.category) != seen.end()) continue;
+            seen.push_back(it.category);
+            int need = 2 + (int)util::width(it.category) + 2;
+            if (lx + need > x + w - 18) continue;
+            put(lx, legend_y, cal_dot(), it.color);
+            put(lx + 2, legend_y, it.category, C_DIM);
+            lx += need;
+        }
+    if (lx + 17 <= x + w) { put(lx, legend_y, "+", C_GOOD, -1, A_BOLD); put(lx + 2, legend_y, "extra money", C_DIM); }
+}
+
+void App::handle_calendar(const Event &e, int lower) {
+    std::string month = bill_month();
+    int yr = std::atoi(month.c_str()), mo = std::atoi(month.c_str() + 5);
+    auto jump = [&](long delta) {   // move the picked day, into the next or last month if needed
+        int ny, nm, nd;
+        from_day_number(day_number(yr, mo, cal_day) + delta, ny, nm, nd);
+        bills_month = date_key(ny, nm, 1).substr(0, 7);
+        cal_day = nd;
+    };
+    if (e.key == K_LEFT) jump(-1);
+    else if (e.key == K_RIGHT) jump(1);
+    else if (e.key == K_UP) jump(-7);
+    else if (e.key == K_DOWN) jump(7);
+    else if (e.key == '[' || e.key == K_PGUP || (e.key == K_MOUSE && e.button == 64)) step_bill_month(-1);
+    else if (e.key == ']' || e.key == K_PGDN || (e.key == K_MOUSE && e.button == 65)) step_bill_month(1);
+    else if (e.key == K_HOME) cal_day = 1;
+    else if (e.key == K_END) cal_day = 31;
+    else if (lower == 'n' || lower == 't') {
+        util::Date t = util::today();
+        bills_month = budget::this_month();
+        cal_day = t.d;
+    } else if (e.key == K_ENTER || e.key == ' ') open_day(cal_day);
+    else if (lower == 'v' || lower == 'c') { cal_view = false; cards_view = lower == 'c'; }
+    else if (lower == 'm' || lower == 'a') open_day(cal_day);
+}
+
+// Enter on a day: record what was paid, open a loan, or add/fix extra money that came in that day
+void App::open_day(int day) {
+    std::string month = bill_month();
+    int yr = std::atoi(month.c_str()), mo = std::atoi(month.c_str() + 5);
+    if (day < 1 || day > util::days_in_month(yr, mo)) return;
+    std::string date = date_key(yr, mo, day);
+    for (;;) {
+        std::vector<std::string> opts;
+        std::vector<int> colors;
+        std::vector<std::function<void()>> acts;
+        for (size_t i = 0; i < b.expenses.size(); i++) {
+            const Expense &e = b.expenses[i];
+            auto dd = e.due_days_in(month);
+            if (std::find(dd.begin(), dd.end(), day) == dd.end()) continue;
+            const Actual *a = e.actual.find(month);
+            const Category *c = b.category(e.category);
+            opts.push_back(util::fit(e.name, 24) + util::pad_left(util::money(e.amount), 11) + "  " +
+                           (a ? "paid " + util::money(a->amount) + " in " + util::month_name(mo, true) : "enter what you paid"));
+            colors.push_back(c ? c->color : -1);
+            acts.push_back([this, i, month] { Expense &x = b.expenses[i]; enter_actual(x.actual, month, x.name, x.planned_in_month(month), false); });
+        }
+        for (size_t i = 0; i < b.loans.size(); i++) {
+            const Loan &l = b.loans[i];
+            if (!l.in_budget || l.balance <= 0 || !l.due_day() || std::min(l.due_day(), util::days_in_month(yr, mo)) != day) continue;
+            opts.push_back(util::fit(l.name, 24) + util::pad_left(util::money(l.monthly_payment() + l.extra), 11) + "  open the loan");
+            colors.push_back(-1);
+            acts.push_back([this, i] { edit_loan(i); });
+        }
+        for (size_t i = 0; i < b.one_times.size(); i++) {
+            if (b.one_times[i].date != date) continue;
+            const Category *c = b.category(b.one_times[i].category);
+            opts.push_back(util::fit(b.one_times[i].name, 24) + util::pad_left(util::money(b.one_times[i].amount), 11) + "  one-time: change or remove");
+            colors.push_back(c ? c->color : -1);
+            acts.push_back([this, i] { edit_one_time(i); });
+        }
+        for (size_t i = 0; i < b.extras.size(); i++) {
+            if (b.extras[i].date != date) continue;
+            opts.push_back(util::fit(b.extras[i].name, 24) + util::pad_left("+" + util::money(b.extras[i].amount), 11) + "  change or remove");
+            colors.push_back(C_GOOD);
+            acts.push_back([this, i] { edit_extra(i); });
+        }
+        opts.push_back("Add a one-time expense on this day...");
+        colors.push_back(-1);
+        acts.push_back([this, date] { add_one_time(date); });
+        opts.push_back("Add extra money that came in this day...");
+        colors.push_back(-1);
+        acts.push_back([this, date] { add_extra(date); });
+        opts.push_back("Done");
+        colors.push_back(-1);
+        int k = choose(util::month_name(mo) + " " + std::to_string(day) + ", " + std::to_string(yr), opts, 0, colors);
+        if (k < 0 || k >= (int)acts.size()) return;
+        acts[(size_t)k]();
+        if (opts.size() == 3) return;   // only the "add" choices were offered: one trip is enough
+    }
+}
+
+// --- One-time money: extra money in (gifts, side hustles) and one-time costs out (a car repair).
+// Both count only in the month they happen; the monthly plan never changes. ---
+
+void App::extra_money(const std::string &date) {
+    for (;;) {
+        std::string month = bill_month();
+        struct Row { std::string date; int extra, once; };   // index into extras or one_times (-1 = the other one)
+        std::vector<Row> rows;
+        for (int i = 0; i < (int)b.extras.size(); i++) if (b.extras[i].month() == month) rows.push_back({b.extras[i].date, i, -1});
+        for (int i = 0; i < (int)b.one_times.size(); i++) if (b.one_times[i].month() == month) rows.push_back({b.one_times[i].date, -1, i});
+        std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &c) { return a.date < c.date; });
+        std::vector<std::string> opts;
+        std::vector<int> colors;
+        double in = 0, out = 0;
+        for (const auto &r : rows) {
+            std::string when = util::fit(util::month_name(std::atoi(r.date.c_str() + 5), true) + " " + std::to_string(std::atoi(r.date.c_str() + 8)), 8);
+            if (r.extra >= 0) {
+                const Extra &xm = b.extras[(size_t)r.extra];
+                in += xm.amount;
+                std::string kind = extra_kind_name(xm.kind);
+                opts.push_back(when + util::fit(xm.name, 24) + util::pad_left("+" + util::money(xm.amount), 12) + "  " + kind.substr(0, kind.find(" (")));
+                colors.push_back(C_GOOD);
+            } else {
+                const OneTime &ot = b.one_times[(size_t)r.once];
+                out += ot.amount;
+                const Category *c = b.category(ot.category);
+                opts.push_back(when + util::fit(ot.name, 24) + util::pad_left("-" + util::money(ot.amount), 12) + "  " + ot.category);
+                colors.push_back(c ? c->color : -1);
+            }
+        }
+        int n = (int)rows.size();
+        for (const char *o : {"Add a one-time expense (car repair, vet, a gift to buy)...", "Add extra money (gift, birthday, side hustle)...",
+                              "< Earlier month", "> Later month", "Done"}) {
+            opts.push_back(o);
+            colors.push_back(-1);
+        }
+        std::string title = "One-time money in " + month_label(month);
+        if (in > 0.005) title += ": +" + util::money(in, false) + " in";
+        if (out > 0.005) title += std::string(in > 0.005 ? ", " : ": ") + util::money(out, false) + " out";
+        int k = choose(title, opts, 0, colors);
+        if (k < 0 || k == n + 4) return;
+        if (k < n) {
+            if (rows[(size_t)k].extra >= 0) edit_extra((size_t)rows[(size_t)k].extra);
+            else edit_one_time((size_t)rows[(size_t)k].once);
+            continue;
+        }
+        if (k == n + 2) { step_bill_month(-1); continue; }
+        if (k == n + 3) { step_bill_month(1); continue; }
+        util::Date t = util::today();
+        std::string day = !date.empty() ? date : month == budget::this_month() ? date_key(t.y, t.m, t.d) : month + "-01";
+        if (k == n) add_one_time(day);
+        else add_extra(day);
+    }
+}
+
+void App::add_one_time(const std::string &date) {
+    OneTime ot;
+    ot.date = date;
+    if (!input("What was it?", ot.name, "Like 'Car repair', 'Vet visit', 'New tires', or 'Wedding gift'.") || util::trim(ot.name).empty()) return;
+    ot.name = util::trim(ot.name);
+    // a good first guess at the category, from the name or a bill with the same words
+    std::string l = util::lower(ot.name);
+    struct Guess { const char *word, *cat; };
+    for (const Guess &g : {Guess{"car", "Transportation"}, {"tire", "Transportation"}, {"oil change", "Transportation"}, {"vet", "Pets"},
+                           {"doctor", "Health"}, {"dentist", "Health"}, {"urgent care", "Health"}, {"pharmacy", "Health"}, {"glasses", "Health"},
+                           {"gift", "Giving"}, {"birthday", "Giving"}, {"wedding", "Giving"}, {"donat", "Giving"}, {"school", "Kids & School"},
+                           {"field trip", "Kids & School"}, {"plumb", "Housing"}, {"furnace", "Housing"}, {"roof", "Housing"}, {"fridge", "Housing"},
+                           {"deposit", "Housing"}, {"clothes", "Clothing"}, {"shoes", "Clothing"}, {"haircut", "Personal Care"},
+                           {"concert", "Fun"}, {"ticket", "Fun"}})
+        if (l.find(g.word) != std::string::npos && b.category(g.cat)) { ot.category = g.cat; break; }
+    if (!input_number("How much did it cost?", ot.amount, "What you paid, or what you expect it to cost.", false) || ot.amount <= 0) return;
+    b.one_times.push_back(ot);
+    save();
+    edit_one_time(b.one_times.size() - 1);
+}
+
+void App::edit_one_time(size_t i) {
+    if (i >= b.one_times.size()) return;
+    run_form("One-time expense",
+        [this, i] {
+            OneTime &ot = b.one_times[i];
+            std::vector<Field> f;
+            f.push_back(f_text("What", ot.name, "Like 'Car repair', 'Vet visit', or 'Wedding gift'."));
+            f.push_back(f_money("Cost", ot.amount, "What you paid, or what you expect it to cost. Planning ahead counts too."));
+            f.push_back(f_date("Day", ot.date, "It counts in that month's totals only.", [this, i] {
+                if (b.one_times[i].date.empty()) b.one_times[i].date = budget::this_month() + "-01";
+            }));
+            f.push_back(f_category(ot.category));
+            Field del{"Remove this", "", "Take it off the list.", nullptr, nullptr};
+            del.edit = [this, i] {
+                if (!confirm("Remove " + b.one_times[i].name + "?")) return;
+                b.one_times.erase(b.one_times.begin() + (long)i);
+                save();
+                say("Removed.", C_DIM);
+                form_->sel = 1 << 20;   // close the form
+            };
+            f.push_back(del);
+            return f;
+        },
+        [this, i] {
+            std::vector<std::pair<std::string, int>> p;
+            const OneTime &ot = b.one_times[i];
+            std::string month = ot.month();
+            auto mm = budget::month_money(b, sum, month);
+            p.push_back({"Counts in " + month_label(month) + " only. Your monthly plan stays the same.", C_DIM});
+            p.push_back({"", -1});
+            p.push_back({month_label(month) + ": " + util::money(mm.in(), false) + " in, " + util::money(mm.out(), false) + " out", -1});
+            p.push_back({"Left over: " + std::string(mm.left() < 0 ? "-" : "") + util::money(std::fabs(mm.left()), false), mm.left() < 0 ? C_WATCH : C_GOOD});
+            if (mm.left() < 0)
+                p.push_back({"More going out than coming in that month. Savings, or moving a want to another month, can cover the gap.", C_WATCH});
+            p.push_back({"", -1});
+            if (sum.real_hourly > 0 && ot.amount > 0)
+                p.push_back({"That's " + util::fixed(ot.amount / sum.real_hourly, 1) + " hours of work at your real hourly pay.", C_DIM});
+            if (b.home.savings > 0)
+                p.push_back({"Your savings: " + util::money(b.home.savings, false) + (ot.amount > b.home.savings ? ". This costs more than that." : "."),
+                             ot.amount > b.home.savings ? C_WATCH : C_DIM});
+            p.push_back({"Tip: surprises like this are what an emergency fund is for. Even $20 a month adds up to $240 a year.", C_DIM});
+            return p;
+        });
+}
+
+// Asks what it was and how much, guesses the kind from the name, then opens it to check.
+void App::add_extra(const std::string &date) {
+    Extra xm;
+    xm.date = date;
+    if (!input("What was it?", xm.name, "Like 'Birthday money from Grandma', 'Mowed lawns', or 'Sold my old bike'.") || util::trim(xm.name).empty()) return;
+    xm.name = util::trim(xm.name);
+    std::string l = util::lower(xm.name);
+    for (const char *w : {"hustle", "gig", "mow", "babysit", "dog sit", "dogsit", "pet sit", "tutor", "doordash", "uber", "lyft", "commission",
+                          "freelance", "odd job", "side job", "etsy", "craft"})
+        if (l.find(w) != std::string::npos) xm.kind = EXTRA_SIDE;
+    for (const char *w : {"sold", "refund", "rebate", "cash back", "cashback", "return"})
+        if (l.find(w) != std::string::npos) xm.kind = EXTRA_OTHER;
+    if (!input_number("How much came in?", xm.amount, "The amount you got to keep.", false) || xm.amount <= 0) return;
+    b.extras.push_back(xm);
+    save();
+    edit_extra(b.extras.size() - 1);
+}
+
+void App::edit_extra(size_t i) {
+    if (i >= b.extras.size()) return;
+    run_form("Extra money",
+        [this, i] {
+            Extra &xm = b.extras[i];
+            std::vector<Field> f;
+            f.push_back(f_text("What", xm.name, "Like 'Birthday money', 'Mowed lawns', or 'Sold my old bike'."));
+            f.push_back(f_money("Amount", xm.amount, "What came in and is yours to keep."));
+            f.push_back(f_date("Day it came in", xm.date, "It counts in this month's totals.", [this, i] {
+                if (b.extras[i].date.empty()) b.extras[i].date = budget::this_month() + "-01";
+            }));
+            int kind = (int)xm.kind;
+            std::vector<std::string> kinds;
+            for (int k = 0; k < EXTRA_KIND_COUNT; k++) kinds.push_back(extra_kind_name((ExtraKind)k));
+            Field kf = f_choice("Kind", kind, kinds, "Gifts aren't taxed for you. Side-hustle money is income the IRS expects you to report.");
+            kf.step = [this, i](int d) { b.extras[i].kind = (ExtraKind)(((int)b.extras[i].kind + d + EXTRA_KIND_COUNT) % EXTRA_KIND_COUNT); };
+            kf.edit = [this, i, kinds] {
+                int k = choose("What kind of money?", kinds, (int)b.extras[i].kind);
+                if (k >= 0) b.extras[i].kind = (ExtraKind)k;
+            };
+            f.push_back(kf);
+            Field del{"Remove this", "", "Take it off the list.", nullptr, nullptr};
+            del.edit = [this, i] {
+                if (!confirm("Remove " + b.extras[i].name + "?")) return;
+                b.extras.erase(b.extras.begin() + (long)i);
+                save();
+                say("Removed.", C_DIM);
+                form_->sel = 1 << 20;   // close the form
+            };
+            f.push_back(del);
+            return f;
+        },
+        [this, i] {
+            std::vector<std::pair<std::string, int>> p;
+            const Extra &xm = b.extras[i];
+            std::string month = xm.month();
+            auto mm = budget::month_money(b, sum, month);
+            p.push_back({"Counts in " + month_label(month) + " only. Your monthly plan stays the same.", C_DIM});
+            p.push_back({"", -1});
+            p.push_back({month_label(month) + ": " + util::money(mm.in(), false) + " in, " + util::money(mm.out(), false) + " out", -1});
+            p.push_back({"Left over: " + std::string(mm.left() < 0 ? "-" : "") + util::money(std::fabs(mm.left()), false), mm.left() < 0 ? C_WATCH : C_GOOD});
+            p.push_back({"", -1});
+            if (xm.kind == EXTRA_SIDE) {
+                double year = 0;
+                for (const auto &o : b.extras)
+                    if (o.kind == EXTRA_SIDE && o.date.substr(0, 4) == xm.date.substr(0, 4)) year += o.amount;
+                p.push_back({"Side hustle money in " + xm.date.substr(0, 4) + ": " + util::money(year, false), -1});
+                p.push_back({year >= 400 ? "Over $400 in a year means self-employment tax (about 15%) on top of income tax. Setting aside about 25% covers both."
+                                         : "Side-hustle money counts as income. Once it passes $400 in a year, you owe self-employment tax too.",
+                             year >= 400 ? C_OKAY : C_DIM});
+                p.push_back({"Steady every month? Add it on the Income tab as Self-employed, so the plan counts it.", C_DIM});
+            } else if (xm.kind == EXTRA_GIFT) {
+                p.push_back({"Gifts aren't income tax for you: the giver handles any gift tax (only on very large gifts).", C_DIM});
+            }
+            if (sum.real_hourly > 0 && xm.amount > 0)
+                p.push_back({"That's like " + util::fixed(xm.amount / sum.real_hourly, 1) + " hours of work at your real hourly pay.", C_DIM});
+            p.push_back({"Tip: unplanned money is a great time to add to savings or knock down a debt.", C_DIM});
             return p;
         });
 }
@@ -1783,7 +2281,7 @@ int App::choose(const std::string &title, const std::vector<std::string> &opts, 
             int yy = by + 1 + i - off;
             bool sel_ = i == s;
             int tx = bx + 2;
-            if (!colors.empty()) { swatch(tx, yy, colors[i]); tx += 3; }
+            if (!colors.empty()) { if (colors[i] >= 0) swatch(tx, yy, colors[i]); tx += 3; }
             put(tx, yy, util::fit(opts[i], (size_t)(bx + bw - 2 - tx)), -1, -1, sel_ ? A_REVERSE | A_BOLD : 0);
             int k = i;
             hits.push_back({bx, yy, bw, [&s, k] { s = k; }});
@@ -2186,7 +2684,7 @@ void App::edit_expense(size_t i) {
                 f.push_back(cf);
             }
             {
-                std::string month = budget::this_month();
+                std::string month = bill_month();
                 const Actual *a = e.actual.find(month);
                 Field paid{"Paid in " + month_label(month), a ? util::money(a->amount) : "(not entered)",
                            "When the bill comes and it's different from the plan, type what you really paid. "
@@ -2219,7 +2717,7 @@ void App::edit_expense(size_t i) {
         [this, i] {
             std::vector<std::pair<std::string, int>> p;
             const Expense &e = b.expenses[i];
-            std::string month = budget::this_month();
+            std::string month = bill_month();
             if (int li = budget::loan_twin(b, e); li >= 0) {
                 p.push_back({"Counted twice? This looks like the payment for the loan '" + b.loans[(size_t)li].name +
                                  "', which already counts in your budget from the Loans tab. If it's the same, delete this one (D on the list).", C_WATCH});
@@ -2227,7 +2725,7 @@ void App::edit_expense(size_t i) {
             }
             if (const Actual *a = e.actual.find(month)) {
                 double diff = a->amount - e.planned_in_month(month);
-                p.push_back({"This month: paid " + util::money(a->amount) + (std::fabs(diff) < 0.005 ? ", right on plan"
+                p.push_back({month_label(month) + ": paid " + util::money(a->amount) + (std::fabs(diff) < 0.005 ? ", right on plan"
                              : ", " + util::money(std::fabs(diff)) + (diff > 0 ? " over the plan" : " under the plan")), diff > 0.005 ? C_OKAY : C_GOOD});
                 p.push_back({"", -1});
             }
@@ -3014,6 +3512,7 @@ void App::handle(const Event &e) {
     if (key == K_ESC) {   // back out: a sub-view first, then to Home
         msg.clear();
         if (tab == T_EXPENSES && cards_view) { cards_view = false; sel[tab] = 0; scroll[tab] = 0; }
+        else if (tab == T_EXPENSES && cal_view) cal_view = false;
         else if (tab == T_PRICES && bought_view) { bought_view = false; sel[tab] = 0; scroll[tab] = 0; }
         else tab = T_HOME;
         return;
@@ -3037,6 +3536,7 @@ void App::handle(const Event &e) {
         case T_INCOME:
             handle_list_keys(e, (int)b.earners.size());
             if (lower == 'h') edit_household();
+            else if (lower == 'x') { bills_month = budget::this_month(); extra_money(""); }
             else if (lower == 'a') {
                 b.earners.push_back(Earner());
                 if (b.earners.size() > 1) b.earners.back().name = "Job " + std::to_string(b.earners.size());
@@ -3053,6 +3553,11 @@ void App::handle(const Event &e) {
             }
             break;
         case T_EXPENSES: {
+            if (lower == 'x') { extra_money(""); break; }
+            if (cal_view) { handle_calendar(e, lower); break; }
+            if (key == K_LEFT || key == '[') { step_bill_month(-1); break; }
+            if (key == K_RIGHT || key == ']') { step_bill_month(1); break; }
+            if (lower == 'n') { bills_month = budget::this_month(); break; }
             if (lower == 'c') {
                 cards_view = !cards_view;
                 sel[tab] = 0;
@@ -3060,6 +3565,12 @@ void App::handle(const Event &e) {
                 break;
             }
             if (cards_view) { handle_cards(e, lower); break; }
+            if (lower == 'v') {
+                cal_view = true;
+                util::Date t = util::today();
+                cal_day = bill_month() == budget::this_month() ? t.d : 1;
+                break;
+            }
             auto order = expense_order();
             handle_list_keys(e, (int)order.size());
             bool has = sel[tab] < (int)order.size();
@@ -3084,7 +3595,7 @@ void App::handle(const Event &e) {
             } else if (lower == 't') add_from_template();
             else if (lower == 'm' && cur >= 0) {
                 Expense &x = b.expenses[cur];
-                std::string month = budget::this_month();
+                std::string month = bill_month();
                 enter_actual(x.actual, month, x.name, x.planned_in_month(month), false);
             } else if (key == K_ENTER && cur >= 0) edit_expense((size_t)cur);
             else if ((lower == 'd' || key == K_DELETE) && cur >= 0) {

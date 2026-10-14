@@ -201,6 +201,23 @@ Summary summarize(const Budget &b) {
                 diff < -0.5 ? "A lighter month. Bills that can wait a week, or the leftover from last month, can cover the gap."
                             : "At or above the estimate. Extra can go straight to savings or a debt.");
         }
+        double extra = 0, side = 0;
+        for (const auto &x : b.extras)
+            if (x.month() == month) { extra += x.amount; if (x.kind == EXTRA_SIDE) side += x.amount; }
+        if (extra > 0.005)
+            tip(GOOD, "Extra money this month: " + util::money(extra, false),
+                "It isn't part of the plan, so it's a bonus. Putting it toward savings or a debt makes it last." +
+                    std::string(side > 0.005 ? " Side hustle money is taxable: setting aside about 25% covers it." : ""));
+        double once = 0;
+        std::string biggest;
+        double big = 0;
+        for (const auto &x : b.one_times)
+            if (x.month() == month) { once += x.amount; if (x.amount > big) { big = x.amount; biggest = x.name; } }
+        if (once > 0.005)
+            tip(once > s.left_month && s.left_month > 0 ? WATCH : OKAY, "One-time costs this month: " + util::money(once, false),
+                (biggest.empty() ? std::string() : "The biggest is " + biggest + ". ") +
+                    (once > s.left_month ? "That's more than a usual month's leftover money, so savings may need to cover part of it."
+                                         : "Your usual leftover money covers it. Saving a little each month for surprises makes the next one easier."));
         if (b.link.food_month == month && (b.link.food_wasted > 0 || b.link.food_saved > 0))
             tip(b.link.food_wasted <= b.link.food_saved ? GOOD : OKAY,
                 "Food: " + util::money(b.link.food_wasted) + " expired, " + util::money(b.link.food_saved) + " saved by freezing",
@@ -257,6 +274,29 @@ int loan_twin(const Budget &b, const Expense &e) {
         if (loan_cat || named) return (int)i;
     }
     return -1;
+}
+
+MonthMoney month_money(const Budget &b, const Summary &s, const std::string &month) {
+    MonthMoney mm;
+    for (size_t i = 0; i < b.earners.size(); i++) {
+        if (const Actual *a = b.earners[i].actual.find(month)) { mm.pay += a->amount; mm.pay_entered++; }
+        else if (i < s.tax.earners.size()) mm.pay += s.tax.earners[i].net / 12;
+    }
+    for (const auto &x : b.extras)
+        if (x.month() == month) { mm.extra += x.amount; mm.extras++; }
+    for (const auto &x : b.one_times)
+        if (x.month() == month) { mm.one_time += x.amount; mm.one_times++; }
+    MonthBills mb = month_bills(b, month);
+    for (const auto &e : b.expenses) {
+        const Card *c = card_of(b, e);
+        if (c && mb.cards[(size_t)(c - b.cards.data())].entered) continue;   // counted in the card payment below
+        const Actual *a = e.actual.find(month);
+        mm.bills += a ? a->amount : e.planned_in_month(month);
+    }
+    for (const auto &cm : mb.cards) if (cm.entered) mm.bills += cm.paid;
+    for (const auto &l : b.loans)
+        if (l.in_budget && l.balance > 0) mm.loans += l.monthly_payment() + l.extra;
+    return mm;
 }
 
 const Card *card_of(const Budget &b, const Expense &e) {

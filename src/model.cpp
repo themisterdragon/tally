@@ -139,6 +139,31 @@ long Expense::next_due(long from) const {
     return -1;
 }
 
+std::vector<int> Expense::due_days_in(const std::string &month) const {
+    std::vector<int> out;
+    int y = month.size() == 7 ? std::atoi(month.c_str()) : 0, m = month.size() == 7 ? std::atoi(month.c_str() + 5) : 0;
+    if (y < 1900 || m < 1 || m > 12) return out;
+    long first = day_number(y, m, 1), last = day_number(y, m, util::days_in_month(y, m));
+    for (long n = next_due(first); n >= first && n <= last; n = next_due(n + 1)) out.push_back((int)(n - first) + 1);
+    return out;
+}
+
+const char *extra_kind_name(ExtraKind k) {
+    switch (k) {
+        case EXTRA_GIFT: return "Gift or birthday money";
+        case EXTRA_SIDE: return "Side hustle";
+        default: return "Other (sold something, refund...)";
+    }
+}
+
+const char *extra_kind_key(ExtraKind k) {
+    switch (k) {
+        case EXTRA_GIFT: return "gift";
+        case EXTRA_SIDE: return "side";
+        default: return "other";
+    }
+}
+
 int Loan::due_day() const {
     int y, m, d;
     return parse_date(next_due, y, m, d) ? d : 0;
@@ -402,6 +427,10 @@ std::string Budget::serialize() const {
         if (!p.store.empty()) o += "store = " + esc(p.store) + "\n";
         if (!p.id.empty()) o += "server_id = " + esc(p.id) + "\n";
     }
+    for (const auto &x : one_times)
+        o += "\n[one_time]\ndate = " + esc(x.date) + "\nname = " + esc(x.name) + "\namount = " + num(x.amount) + "\ncategory = " + esc(x.category) + "\n";
+    for (const auto &x : extras)
+        o += "\n[extra]\ndate = " + esc(x.date) + "\nname = " + esc(x.name) + "\namount = " + num(x.amount) + "\nkind = " + extra_kind_key(x.kind) + "\n";
     return o;
 }
 
@@ -433,6 +462,8 @@ bool Budget::parse(const std::string &text, std::string &error) {
             else if (section == "want") wants.emplace_back();
             else if (section == "card") cards.emplace_back();
             else if (section == "purchase") purchases.emplace_back();
+            else if (section == "extra") extras.emplace_back();
+            else if (section == "one_time") one_times.emplace_back();
             continue;
         }
         size_t eq = line.find('=');
@@ -520,6 +551,18 @@ bool Budget::parse(const std::string &text, std::string &error) {
             else if (k == "category") p.category = v;
             else if (k == "store") p.store = v;
             else if (k == "server_id") p.id = v;
+        } else if (section == "extra" && !extras.empty()) {
+            auto &x = extras.back();
+            if (k == "date") x.date = v;
+            else if (k == "name") x.name = v;
+            else if (k == "amount") x.amount = d(v);
+            else if (k == "kind") x.kind = v == "side" ? EXTRA_SIDE : v == "other" ? EXTRA_OTHER : EXTRA_GIFT;
+        } else if (section == "one_time" && !one_times.empty()) {
+            auto &x = one_times.back();
+            if (k == "date") x.date = v;
+            else if (k == "name") x.name = v;
+            else if (k == "amount") x.amount = d(v);
+            else if (k == "category") x.category = v;
         } else if (section == "want" && !wants.empty()) {
             auto &w = wants.back();
             if (k == "name") w.name = v;

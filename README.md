@@ -29,6 +29,12 @@ Linux, macOS, and Windows, and needs no internet, no account, and nothing else i
 - **Bills and pay that change.** Press `M` when the electric bill or a paycheck comes in and type
   what it really was this month. The plan stays put, Tally shows the difference, and after a couple
   of months it can use your real average as the plan.
+- **Any month, and a calendar.** On Expenses, Left/Right steps back and forward through months, so
+  you can fix last month's bills or look ahead. `V` shows the month as a calendar with a colored dot
+  (the category's color) on each day a bill is due.
+- **One-time money in and out.** `X` adds birthday money, a gift, or side-hustle cash, or a one-time
+  cost like a car repair. Each counts only in its own month's totals (in, out, and left over) and
+  never changes your plan. Side-hustle money shows when self-employment tax kicks in.
 - **What you really bought.** On Prices, press `B` to see this month's purchases next to the plan,
   category by category. Add, edit, or delete any purchase. It's for trends only: purchases never
   change your expenses or totals.

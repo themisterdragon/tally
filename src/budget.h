@@ -62,6 +62,22 @@ struct MonthBills {
     std::vector<CardMonth> cards;   // same order as Budget::cards
 };
 MonthBills month_bills(const Budget &b, const std::string &month);
+// Everything in and out for one month, using what really happened where it's been entered and the plan
+// everywhere else. Extra money (gifts, side hustles) counts only in the month it came in.
+struct MonthMoney {
+    double pay = 0;            // take-home: entered pay, else the estimate
+    int pay_entered = 0;       // incomes with a real amount entered for the month
+    double extra = 0;          // gifts, side hustles...
+    int extras = 0;
+    double bills = 0;          // expenses (card payments stand in for the bills on them)
+    double loans = 0;          // loan payments in the budget, with any extra
+    double one_time = 0;       // costs that happen once: a car repair, a vet visit...
+    int one_times = 0;
+    double in() const { return pay + extra; }
+    double out() const { return bills + loans + one_time; }
+    double left() const { return in() - out(); }
+};
+MonthMoney month_money(const Budget &b, const Summary &s, const std::string &month);
 const Card *card_of(const Budget &b, const Expense &e);   // the card it's on, if that card still exists
 
 // Loans already count in the budget. An expense that looks like the same payment (same amount,
